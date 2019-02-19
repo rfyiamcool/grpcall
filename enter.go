@@ -1,6 +1,7 @@
 package grpcall
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -11,7 +12,6 @@ import (
 	"time"
 
 	"github.com/jhump/protoreflect/grpcreflect"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"

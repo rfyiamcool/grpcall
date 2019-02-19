@@ -1,6 +1,7 @@
 package grpcall
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"sync"
@@ -11,7 +12,6 @@ import (
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/jhump/protoreflect/dynamic/grpcdynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
