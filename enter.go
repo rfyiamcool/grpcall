@@ -174,7 +174,9 @@ type EngineHandler struct {
 
 	dialTime      time.Duration
 	keepAliveTime time.Duration
-	ctx           context.Context
+
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 type Option func(*EngineHandler) error
@@ -211,7 +213,7 @@ func New(handler InvocationEventHandler, options ...Option) (*EngineHandler, err
 	e := new(EngineHandler)
 
 	// default values
-	e.ctx = context.Background()
+	e.ctx, e.cancel = context.WithCancel(context.Background())
 	e.dialTime = 10 * time.Second
 	e.keepAliveTime = 64 * time.Second
 	e.eventHandler = handler
@@ -281,8 +283,36 @@ func (e *EngineHandler) InitFormater() error {
 	return nil
 }
 
-// Call
+func (e *EngineHandler) Close() error {
+	e.cancel()
+
+	e.clientsLock.Lock()
+	defer e.clientsLock.Unlock()
+	for _, cc := range e.clients {
+		cc.Close()
+	}
+
+	return nil
+}
+
 func (e *EngineHandler) Call(target, serviceName, methodName, data string) error {
+	return e.invokeCall(nil, target, serviceName, methodName, data)
+}
+
+func (e *EngineHandler) CallWithAddr(target, serviceName, methodName, data string) error {
+	return e.invokeCall(nil, target, serviceName, methodName, data)
+}
+
+func (e *EngineHandler) CallWithClient(client *grpc.ClientConn, serviceName, methodName, data string) error {
+	if client != nil {
+		return errors.New("invalid grpc client")
+	}
+
+	return e.invokeCall(client, "", serviceName, methodName, data)
+}
+
+// invokeCall request target grpc server
+func (e *EngineHandler) invokeCall(gclient *grpc.ClientConn, target, serviceName, methodName, data string) error {
 	if target == "" || serviceName == "" || methodName == "" {
 		return errors.New("target or serverName or methodName is null")
 	}
@@ -315,9 +345,13 @@ func (e *EngineHandler) Call(target, serviceName, methodName, data string) error
 		descSource = DescriptorSourceFromServer(e.ctx, refClient)
 	}
 
-	cc, connErr = e.DoConnect(target)
-	if connErr != nil {
-		return connErr
+	if gclient == nil {
+		cc, connErr = e.DoConnect(target)
+		if connErr != nil {
+			return connErr
+		}
+	} else {
+		cc = gclient
 	}
 
 	var inData io.Reader
