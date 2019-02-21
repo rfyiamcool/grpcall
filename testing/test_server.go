@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
-	pb "github.com/grpcall/testing/helloworld"
+	pb "github.com/rfyiamcool/grpcall/testing/helloworld"
 )
 
 const (
