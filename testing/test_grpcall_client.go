@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/fullstorydev/grpcurl"
+	"github.com/rfyiamcool/grpcall"
 	"github.com/jhump/protoreflect/desc"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
