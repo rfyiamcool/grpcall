@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rfyiamcool/golib/grpcall"
+	"github.com/rfyiamcool/grpcall"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -15,7 +15,10 @@ func main() {
 	defer fmt.Println("end...")
 
 	grpcall.SetProtoSetFiles("helloworld.protoset")
-	grpcall.InitDescSource()
+	err := grpcall.InitDescSource()
+	if err != nil {
+		panic(err.Error())
+	}
 
 	var handler = DefaultEventHandler{}
 	var sendBody string

@@ -116,6 +116,18 @@ func (d *DescSourceEntry) InitDescSource() error {
 	switch descSourceController.descMode {
 	case ProtoSetMode:
 		// parse proto by protoset
+
+		if descSourceController.protoset.IsEmpty() {
+			return errors.New("protoset null")
+		}
+
+		for _, f := range descSourceController.protoset {
+			ok := pathExists(f)
+			if !ok {
+				return errors.New("protoset file not exist")
+			}
+		}
+
 		desc, err = DescriptorSourceFromProtoSets(descSourceController.protoset...)
 		if err != nil {
 			return errors.New("Failed to process proto descriptor sets")
