@@ -2,9 +2,10 @@ package main
 
 import (
 	"fmt"
+	"sync"
+	"time"
 
-	"github.com/rfyiamcool/grpcall"
-	"github.com/jhump/protoreflect/desc"
+	"github.com/rfyiamcool/golib/grpcall"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -19,34 +20,64 @@ func main() {
 	var handler = DefaultEventHandler{}
 	var sendBody string
 
-	grpcEnter, err := grpcall.New(&handler)
+	grpcEnter, err := grpcall.New(
+		grpcall.SetHookHandler(&handler),
+	)
 	grpcEnter.Init()
 
 	sendBody = `{"name": "xiaorui.cc"}`
-	err = grpcEnter.Call("127.0.0.1:50051", "helloworld.Greeter", "SayHello", sendBody)
-	fmt.Println("return err: ", err)
+	res, err := grpcEnter.Call("127.0.0.1:50051", "helloworld.Greeter", "SayHello", sendBody)
+	fmt.Printf("%+v \n", res)
+	fmt.Println("req/reply return err: ", err)
 
-	sendBody = `{"msg": "xxxxxxxxx"}`
-	err = grpcEnter.Call("127.0.0.1:50051", "helloworld.SimpleService", "SimpleRPC", sendBody)
-	fmt.Println("return err: ", err)
+	sendBody = `{"msg": "hehe world"}`
+	res, err = grpcEnter.Call("127.0.0.1:50051", "helloworld.SimpleService", "SimpleRPC", sendBody)
+	fmt.Printf("%+v \n", res)
+	fmt.Println("stream return err: ", err)
+
+	wg := sync.WaitGroup{}
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		for {
+			body := fmt.Sprintf(`{"msg": "hehe world %s"}`, time.Now().String())
+			select {
+			case res.SendChan <- []byte(body):
+				// fmt.Println("send", body)
+				time.Sleep(3 * time.Second)
+
+			case <-res.DoneChan:
+				return
+
+			default:
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+
+		for {
+			select {
+			case msg, ok := <-res.ResultChan:
+				fmt.Println("recv data:", msg, ok)
+			case err := <-res.DoneChan:
+				fmt.Println("done chan: ", err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
 }
 
 type DefaultEventHandler struct {
+	sendChan chan []byte
 }
 
 func (h *DefaultEventHandler) OnReceiveData(md metadata.MD, resp string, respErr error) {
-	fmt.Printf("\nResponse headers received:\n%v\n", md)
-	fmt.Printf("\nResponse contents: \n %v\n", resp)
-	fmt.Println(respErr)
-}
-
-func (h *DefaultEventHandler) OnStreamSend(data string) {
-}
-
-func (h *DefaultEventHandler) OnResolveMethod(md *desc.MethodDescriptor) {
-}
-
-func (h *DefaultEventHandler) OnSendHeaders(md metadata.MD) {
 }
 
 func (h *DefaultEventHandler) OnReceiveTrailers(stat *status.Status, md metadata.MD) {

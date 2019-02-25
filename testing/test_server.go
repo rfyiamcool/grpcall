@@ -1,19 +1,19 @@
 package main
 
 import (
-	"fmt"
+	"context"
 	"io"
 	"log"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
+	"sync"
 	"time"
-	"context"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
-	pb "github.com/rfyiamcool/grpcall/testing/helloworld"
+	pb "git.biss.com/golib/grpcall/testing/helloworld"
 )
 
 const (
@@ -25,37 +25,53 @@ type server struct{}
 
 // SayHello implements helloworld.GreeterServer
 func (s *server) SayHello(ctx context.Context, in *pb.HelloRequest) (*pb.HelloReply, error) {
-	fmt.Println("######### get client request name :" + in.Name)
+	log.Println("######### get client request name :" + in.Name)
 	return &pb.HelloReply{Message: "hehe main: Hello-" + in.Name}, nil
 }
 
-type simpleServer struct {
-}
+type simpleServer struct{}
 
 func (s *simpleServer) SimpleRPC(stream pb.SimpleService_SimpleRPCServer) error {
-	log.Println("Started stream")
-	in, err := stream.Recv()
-	log.Println("Received value")
-	if err == io.EOF {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	log.Println("Got " + in.Msg)
+	log.Println("Started stream first")
 
-	for {
-		d := pb.SimpleData{Msg: "haha"}
-		stream.Send(&d)
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
+	wg := sync.WaitGroup{}
+	wg.Add(2)
 
-		time.Sleep(1 * time.Second)
-	}
+	go func() {
+		defer wg.Done()
+
+		for {
+			in, err := stream.Recv()
+			log.Println("recv data: ", in, "err: ", err)
+			if err != nil {
+				return
+			}
+		}
+	}()
+
+	go func() error {
+		defer wg.Done()
+
+		var err error
+		for {
+			d := pb.SimpleData{Msg: "haha"}
+			stream.Send(&d)
+			if err == io.EOF {
+				log.Println(err)
+				return nil
+			}
+
+			if err != nil {
+				log.Println(err)
+				return err
+			}
+
+			time.Sleep(1 * time.Second)
+		}
+	}()
+
+	wg.Wait()
+	return nil
 }
 
 func main() {
@@ -67,10 +83,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
 	}
-	s := grpc.NewServer(
-		grpc.MaxConcurrentStreams(64),
-		grpc.WriteBufferSize(64*1024),
-	)
+	s := grpc.NewServer()
 
 	srv := &server{}
 	srvm := &simpleServer{}
