@@ -195,9 +195,10 @@ func SetKeepAliveTime(val time.Duration) Option {
 	}
 }
 
-func SetCtx(val context.Context) Option {
+func SetCtx(val context.Context, cancel context.CancelFunc) Option {
 	return func(o *EngineHandler) error {
 		o.ctx = val
+		o.cancel = cancel
 		return nil
 	}
 }
@@ -209,14 +210,21 @@ func SetDescSourceCtl(val *DescSourceEntry) Option {
 	}
 }
 
-func New(handler InvocationEventHandler, options ...Option) (*EngineHandler, error) {
+func SetHookHandler(handler InvocationEventHandler) Option {
+	return func(o *EngineHandler) error {
+		o.eventHandler = handler
+		return nil
+	}
+}
+
+func New(options ...Option) (*EngineHandler, error) {
 	e := new(EngineHandler)
 
 	// default values
 	e.ctx, e.cancel = context.WithCancel(context.Background())
 	e.dialTime = 10 * time.Second
 	e.keepAliveTime = 64 * time.Second
-	e.eventHandler = handler
+	e.eventHandler = defaultInEventHooker
 	e.descCtl = descSourceController
 	e.clients = make(map[string]*grpc.ClientConn, 10)
 
@@ -240,8 +248,7 @@ func (e *EngineHandler) DoConnect(target string) (*grpc.ClientConn, error) {
 
 	e.clientsLock.RUnlock()
 
-	ctx, cancel := context.WithTimeout(e.ctx, e.dialTime)
-	defer cancel()
+	ctx, _ := context.WithTimeout(e.ctx, e.dialTime)
 
 	var opts []grpc.DialOption
 	opts = append(opts, grpc.WithKeepaliveParams(keepalive.ClientParameters{
@@ -278,8 +285,8 @@ func (e *EngineHandler) InitFormater() error {
 		return err
 	}
 
-	eventHandler := SetDefaultEventHandler(descSourceController.descSource, formater)
-	e.invokeCtl = newInvokeHandler(eventHandler)
+	inEventHandler := SetDefaultEventHandler(descSourceController.descSource, formater)
+	e.invokeCtl = newInvokeHandler(inEventHandler, e.eventHandler)
 	return nil
 }
 
@@ -295,26 +302,42 @@ func (e *EngineHandler) Close() error {
 	return nil
 }
 
-func (e *EngineHandler) Call(target, serviceName, methodName, data string) error {
-	return e.invokeCall(nil, target, serviceName, methodName, data)
+func (e *EngineHandler) CallWithCtx(ctx context.Context, target, serviceName, methodName, data string) (*ResultModel, error) {
+	return e.invokeCall(ctx, nil, target, serviceName, methodName, data)
 }
 
-func (e *EngineHandler) CallWithAddr(target, serviceName, methodName, data string) error {
-	return e.invokeCall(nil, target, serviceName, methodName, data)
+func (e *EngineHandler) Call(target, serviceName, methodName, data string) (*ResultModel, error) {
+	return e.invokeCall(e.ctx, nil, target, serviceName, methodName, data)
 }
 
-func (e *EngineHandler) CallWithClient(client *grpc.ClientConn, serviceName, methodName, data string) error {
+func (e *EngineHandler) CallWithAddr(target, serviceName, methodName, data string) (*ResultModel, error) {
+	return e.invokeCall(e.ctx, nil, target, serviceName, methodName, data)
+}
+
+func (e *EngineHandler) CallWithAddrCtx(ctx context.Context, target, serviceName, methodName, data string) (*ResultModel, error) {
+	return e.invokeCall(ctx, nil, target, serviceName, methodName, data)
+}
+
+func (e *EngineHandler) CallWithClient(client *grpc.ClientConn, serviceName, methodName, data string) (*ResultModel, error) {
+	return e.CallWithClientCtx(nil, client, serviceName, methodName, data)
+}
+
+func (e *EngineHandler) CallWithClientCtx(ctx context.Context, client *grpc.ClientConn, serviceName, methodName, data string) (*ResultModel, error) {
 	if client != nil {
-		return errors.New("invalid grpc client")
+		return nil, errors.New("invalid grpc client")
 	}
 
-	return e.invokeCall(client, "", serviceName, methodName, data)
+	return e.invokeCall(ctx, client, "", serviceName, methodName, data)
 }
 
 // invokeCall request target grpc server
-func (e *EngineHandler) invokeCall(gclient *grpc.ClientConn, target, serviceName, methodName, data string) error {
+func (e *EngineHandler) invokeCall(ctx context.Context, gclient *grpc.ClientConn, target, serviceName, methodName, data string) (*ResultModel, error) {
 	if target == "" || serviceName == "" || methodName == "" {
-		return errors.New("target or serverName or methodName is null")
+		return nil, errors.New("target or serverName or methodName is null")
+	}
+
+	if ctx == nil {
+		ctx = e.ctx
 	}
 
 	var (
@@ -338,7 +361,7 @@ func (e *EngineHandler) invokeCall(gclient *grpc.ClientConn, target, serviceName
 		refCtx := metadata.NewOutgoingContext(e.ctx, md)
 		cc, connErr = e.DoConnect(target)
 		if connErr != nil {
-			return connErr
+			return nil, connErr
 		}
 
 		refClient = grpcreflect.NewClient(refCtx, reflectpb.NewServerReflectionClient(cc))
@@ -348,7 +371,7 @@ func (e *EngineHandler) invokeCall(gclient *grpc.ClientConn, target, serviceName
 	if gclient == nil {
 		cc, connErr = e.DoConnect(target)
 		if connErr != nil {
-			return connErr
+			return nil, connErr
 		}
 	} else {
 		cc = gclient
@@ -356,23 +379,16 @@ func (e *EngineHandler) invokeCall(gclient *grpc.ClientConn, target, serviceName
 
 	var inData io.Reader
 	inData = strings.NewReader(data)
-
-	rf, _, err := RequestParserAndFormatterFor(descSource, false, inData)
+	rf, err := RequestParserFor(descSource, inData)
 	if err != nil {
-		return errors.New("request parse and format failed")
+		return nil, errors.New("request parse and format failed")
 	}
 
-	err = e.invokeCtl.InvokeRPC(e.ctx, descSource, cc, serviceName, methodName,
+	result, err := e.invokeCtl.InvokeRPC(e.ctx, descSource, cc, serviceName, methodName,
 		append(addlHeaders, rpcHeaders...),
-		e.eventHandler, rf.Next,
+		rf.Next,
 	)
-
-	if err != nil {
-		return err
-	}
-
-	// if h.Status.Code() != codes.OK {
-	return nil
+	return result, err
 }
 
 type multiString []string

@@ -27,9 +27,8 @@ type RequestParser interface {
 }
 
 type jsonRequestParser struct {
-	dec          *json.Decoder
-	unmarshaler  jsonpb.Unmarshaler
-	requestCount int
+	dec         *json.Decoder
+	unmarshaler jsonpb.Unmarshaler
 }
 
 // NewJSONRequestParser returns a RequestParser that reads data in JSON format
@@ -47,7 +46,6 @@ func (f *jsonRequestParser) Next(m proto.Message) error {
 		return err
 	}
 
-	f.requestCount++
 	return f.unmarshaler.Unmarshal(bytes.NewReader(msg), m)
 }
 
@@ -83,6 +81,15 @@ func RequestParserAndFormatterFor(descSource DescriptorSource, emitJSONDefaultFi
 	}
 
 	return NewJSONRequestParser(in, resolver), NewJSONFormatter(emitJSONDefaultFields, resolver), nil
+}
+
+func RequestParserFor(descSource DescriptorSource, in io.Reader) (RequestParser, error) {
+	resolver, err := anyResolver(descSource)
+	if err != nil {
+		return nil, fmt.Errorf("error creating message resolver: %v", err)
+	}
+
+	return NewJSONRequestParser(in, resolver), nil
 }
 
 func ParseFormatterByDesc(descSource DescriptorSource, emitFields bool) (Formatter, error) {

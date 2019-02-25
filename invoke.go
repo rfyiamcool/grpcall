@@ -2,10 +2,10 @@ package grpcall
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
-	"sync"
-	"sync/atomic"
+	"strings"
 
 	"github.com/golang/protobuf/proto"
 	"github.com/jhump/protoreflect/desc"
@@ -21,12 +21,6 @@ import (
 // InvocationEventHandler is a bag of callbacks for handling events that occur in the course
 // of invoking an RPC.
 type InvocationEventHandler interface {
-	// OnResolveMethod is called with a descriptor of the method that is being invoked.
-	OnResolveMethod(*desc.MethodDescriptor)
-
-	// OnSendHeaders is called with the request metadata that is being sent.
-	OnSendHeaders(metadata.MD)
-
 	// OnReceiveHeaders is called when response headers and message have been received.
 	OnReceiveData(metadata.MD, string, error)
 
@@ -34,203 +28,283 @@ type InvocationEventHandler interface {
 	OnReceiveTrailers(*status.Status, metadata.MD)
 }
 
+var defaultInEventHooker = new(InEventHooker)
+
+type InEventHooker struct {
+}
+
+func (h *InEventHooker) OnReceiveData(md metadata.MD, resp string, respErr error) {
+}
+
+func (h *InEventHooker) OnReceiveTrailers(stat *status.Status, md metadata.MD) {
+}
+
+type ResultModel struct {
+	ResultChan chan string
+	SendChan   chan []byte
+	DoneChan   chan error
+	Data       string
+	RespHeader metadata.MD
+	IsStream   bool
+}
+
 // RequestSupplier is a function that is called to populate messages for a gRPC operation.
 type RequestSupplier func(proto.Message) error
 
 type InvokeHandler struct {
-	eventHandler *EventHandler
+	inEventHandler *EventHandler          // inside
+	eventHandler   InvocationEventHandler // custom
 }
 
-func newInvokeHandler(envent *EventHandler) *InvokeHandler {
+func newInvokeHandler(event *EventHandler, inEvent InvocationEventHandler) *InvokeHandler {
 	return &InvokeHandler{
-		eventHandler: envent,
+		eventHandler:   inEvent,
+		inEventHandler: event,
 	}
 }
 
 // InvokeRPC uses the given gRPC channel to invoke the given method.
 func (in *InvokeHandler) InvokeRPC(ctx context.Context, source DescriptorSource, ch grpcdynamic.Channel, svc, mth string,
-	headers []string, handler InvocationEventHandler, requestData RequestSupplier) error {
+	headers []string, requestData RequestSupplier) (*ResultModel, error) {
 
 	md := MetadataFromHeaders(headers)
 	if svc == "" || mth == "" {
-		return fmt.Errorf("given method name %s/%s is not in expected format: 'service/method' or 'service.method'", svc, mth)
+		return nil, fmt.Errorf("given method name %s/%s is not in expected format: 'service/method' or 'service.method'", svc, mth)
 	}
 
-	// 获取方法的输入和输出类型
 	dsc, err := source.FindSymbol(svc)
 	if err != nil {
 		if isNotFoundError(err) {
-			return fmt.Errorf("target server does not expose service %q", svc)
+			return nil, fmt.Errorf("target server does not expose service %q", svc)
 		}
 
-		return fmt.Errorf("failed to query for service descriptor %q: %v", svc, err)
+		return nil, fmt.Errorf("failed to query for service descriptor %q: %v", svc, err)
 	}
 
-	// 重试断言
 	sd, ok := dsc.(*desc.ServiceDescriptor)
 	if !ok {
-		return fmt.Errorf("target server does not expose service %q", svc)
+		return nil, fmt.Errorf("target server does not expose service %q", svc)
 	}
 
 	mtd := sd.FindMethodByName(mth)
 	if mtd == nil {
-		return fmt.Errorf("service %q does not include a method named %q", svc, mth)
+		return nil, fmt.Errorf("service %q does not include a method named %q", svc, mth)
 	}
-
-	// handler.OnResolveMethod(mtd)
 
 	// we also download any applicable extensions so we can provide full support for parsing user-provided data
 	var ext dynamic.ExtensionRegistry
 	alreadyFetched := map[string]bool{}
 	if err = fetchAllExtensions(source, &ext, mtd.GetInputType(), alreadyFetched); err != nil {
-		return fmt.Errorf("error resolving server extensions for message %s: %v", mtd.GetInputType().GetFullyQualifiedName(), err)
-	}
-	if err = fetchAllExtensions(source, &ext, mtd.GetOutputType(), alreadyFetched); err != nil {
-		return fmt.Errorf("error resolving server extensions for message %s: %v", mtd.GetOutputType().GetFullyQualifiedName(), err)
+		return nil, fmt.Errorf("error resolving server extensions for message %s: %v", mtd.GetInputType().GetFullyQualifiedName(), err)
 	}
 
+	if err = fetchAllExtensions(source, &ext, mtd.GetOutputType(), alreadyFetched); err != nil {
+		return nil, fmt.Errorf("error resolving server extensions for message %s: %v", mtd.GetOutputType().GetFullyQualifiedName(), err)
+	}
+
+	ctx = metadata.NewOutgoingContext(ctx, md)
 	msgFactory := dynamic.NewMessageFactoryWithExtensionRegistry(&ext)
 	req := msgFactory.NewMessage(mtd.GetInputType())
-
-	handler.OnSendHeaders(md)
-	ctx = metadata.NewOutgoingContext(ctx, md)
-
 	stub := grpcdynamic.NewStubWithMessageFactory(ch, msgFactory)
-	ctx, cancel := context.WithCancel(ctx)
-
-	defer cancel()
 
 	if mtd.IsClientStreaming() && mtd.IsServerStreaming() {
-		return in.invokeAllStrem(ctx, stub, mtd, handler, requestData, req)
+		data2PBParser := func(data string) (proto.Message, error) {
+			var (
+				inData io.Reader
+			)
+
+			inData = strings.NewReader(data)
+			rf, err := RequestParserFor(source, inData)
+			if err != nil {
+				return nil, errors.New("request parse and format failed")
+			}
+
+			req := msgFactory.NewMessage(mtd.GetInputType())
+			rf.Next(req)
+			return req, err
+		}
+
+		return in.invokeAllStrem(ctx, stub, mtd, in.eventHandler, requestData, req, data2PBParser)
+
 	} else {
-		return in.invokeUnary(ctx, stub, mtd, handler, requestData, req)
+		return in.invokeUnary(ctx, stub, mtd, in.eventHandler, requestData, req)
 	}
-
-	// } else if mtd.IsClientStreaming() {
-	// 	return invokeClientStream(ctx, stub, mtd, handler, requestData, req)
-
-	// } else if mtd.IsServerStreaming() {
-	// 	return invokeServerStream(ctx, stub, mtd, handler, requestData, req)
 }
 
+// } else if mtd.IsClientStreaming() {
+// 	return invokeClientStream(ctx, stub, mtd, in.eventHandler, requestData, req)
+
+// } else if mtd.IsServerStreaming() {
+// 	return invokeServerStream(ctx, stub, mtd, in.eventHandler, requestData, req)
+
 func (in *InvokeHandler) invokeUnary(ctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDescriptor, handler InvocationEventHandler,
-	requestData RequestSupplier, req proto.Message) error {
+	requestData RequestSupplier, req proto.Message) (*ResultModel, error) {
 
 	err := requestData(req)
 	if err != nil && err != io.EOF {
-		return fmt.Errorf("error getting request data: %v", err)
+		return nil, fmt.Errorf("error getting request data: %v", err)
 	}
 
 	if err != io.EOF {
 		// verify there is no second message, which is a usage error
 		err := requestData(req)
 		if err == nil {
-			return fmt.Errorf("method %q is a unary RPC, but request data contained more than 1 message", md.GetFullyQualifiedName())
+			return nil, fmt.Errorf("method %q is a unary RPC, but request data contained more than 1 message", md.GetFullyQualifiedName())
 		} else if err != io.EOF {
-			return fmt.Errorf("error getting request data: %v", err)
+			return nil, fmt.Errorf("error getting request data: %v", err)
 		}
-	}
-
-	var respHeaders metadata.MD
-	var respTrailers metadata.MD
-
-	resp, err := stub.InvokeRpc(ctx, md, req, grpc.Trailer(&respTrailers), grpc.Header(&respHeaders))
-
-	stat, ok := status.FromError(err)
-	if !ok {
-		return fmt.Errorf("grpc call for %q failed: %v", md.GetFullyQualifiedName(), err)
-	}
-
-	if stat.Code() == codes.OK {
-		//
-	}
-
-	respText := in.eventHandler.FormatResponse(resp)
-	handler.OnReceiveData(respHeaders, respText, err)
-
-	return nil
-}
-
-func (in *InvokeHandler) invokeAllStrem(ctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDescriptor, handler InvocationEventHandler,
-	requestData RequestSupplier, req proto.Message) error {
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	// invoke rpc by stream
-	streamReq, err := stub.InvokeRpcBidiStream(ctx, md)
-	if err != nil {
-		return err
 	}
 
 	var (
-		wg      sync.WaitGroup
-		sendErr atomic.Value
+		respHeaders  metadata.MD
+		respTrailers metadata.MD
 	)
 
-	defer wg.Wait()
-	wg.Add(1)
+	resp, err := stub.InvokeRpc(ctx, md, req, grpc.Trailer(&respTrailers), grpc.Header(&respHeaders))
+	stat, ok := status.FromError(err)
+	if !ok {
+		return nil, fmt.Errorf("grpc call for %q failed: %v", md.GetFullyQualifiedName(), err)
+	}
+
+	if stat.Code() == codes.OK {
+	}
+
+	respText := in.inEventHandler.FormatResponse(resp)
+	result := &ResultModel{
+		IsStream:   false,
+		Data:       respText,
+		RespHeader: respHeaders,
+	}
+	return result, nil
+}
+
+func (in *InvokeHandler) invokeAllStrem(pctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDescriptor, handler InvocationEventHandler,
+	requestData RequestSupplier, req proto.Message, dataParser func(data string) (proto.Message, error)) (*ResultModel, error) {
+
+	// for inside logic
+	ctx, cancel := context.WithCancel(pctx)
+
+	// invoke rpc with stream mode
+	streamReq, err := stub.InvokeRpcBidiStream(ctx, md)
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		resultChan = make(chan string, 10)
+		sendChan   = make(chan []byte, 10)
+		doneChan   = make(chan error, 1)
+
+		doneNotify = func(err error) {
+			select {
+			case doneChan <- err:
+			default:
+				return
+			}
+		}
+	)
+
+	// sendErr atomic.Value
+	// if se, ok := sendErr.Load().(error); ok && se != io.EOF {
+	// 	err = se
+	// }
+
+	// first send
+	err = requestData(req)
+	if err != nil {
+		return nil, err
+	}
+
+	err = streamReq.SendMsg(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Concurrently upload each request message in the stream
 	go func() {
-		defer wg.Done()
-
-		// Concurrently upload each request message in the stream
-		var err error
-		err = requestData(req)
-
-		if err == io.EOF {
-			err = streamReq.CloseSend()
-			return
-		}
-
-		if err != nil {
-			err = fmt.Errorf("error getting request data: %s", err.Error())
-			return
-		}
-
-		err = streamReq.SendMsg(req)
-		req.Reset() // zero state
-
-		if err != nil {
-			sendErr.Store(err)
+		defer func() {
 			cancel()
+			streamReq.CloseSend()
+		}()
+
+		for {
+			select {
+			case data, ok := <-sendChan:
+				if !ok {
+					doneNotify(nil)
+					return
+				}
+
+				if err := ctx.Err(); err != nil {
+					return
+				}
+
+				if err := pctx.Err(); err != nil {
+					return
+				}
+
+				req, err := dataParser(string(data))
+				if err != nil {
+					doneNotify(err)
+					return
+				}
+
+				err = streamReq.SendMsg(req)
+				if err != nil {
+					doneNotify(err)
+					return
+				}
+
+			case <-pctx.Done():
+				doneNotify(nil)
+				return
+
+			case <-ctx.Done():
+				doneNotify(nil)
+				return
+			}
 		}
 	}()
 
-	// fetch each response message
-	for err == nil {
+	go func() {
+		defer func() {
+			cancel()
+		}()
+
+		var err error
 		var resp proto.Message
-		resp, err = streamReq.RecvMsg()
-		if err != nil {
-			if err == io.EOF {
-				err = nil
+
+		for {
+			resp, err = streamReq.RecvMsg()
+			if err != nil {
+				doneNotify(err)
+				break
 			}
-			break
+
+			respHeaders, err := streamReq.Header()
+			if err != nil {
+				doneNotify(err)
+				return
+			}
+
+			// callback
+			respStr := DefaultEventHandler.FormatResponse(resp)
+			handler.OnReceiveData(respHeaders, respStr, err)
+			resultChan <- respStr
+
+			// zero buffer
+			resp.Reset()
 		}
+	}()
 
-		// 测试是否最新
-		respHeaders, err := streamReq.Header()
-		if err != nil {
-			break
-		}
-
-		// handler.OnReceiveResponse(resp)
-		respStr := DefaultEventHandler.FormatResponse(resp)
-		handler.OnReceiveData(respHeaders, respStr, err)
+	result := &ResultModel{
+		IsStream:   true,
+		ResultChan: resultChan,
+		SendChan:   sendChan,
+		DoneChan:   doneChan,
 	}
 
-	if se, ok := sendErr.Load().(error); ok && se != io.EOF {
-		err = se
-	}
-
-	stat, ok := status.FromError(err)
-	if !ok {
-		// Error codes sent from the server will get printed differently below.
-		// So just bail for other kinds of errors here.
-		return fmt.Errorf("grpc call for %q failed: %v", md.GetFullyQualifiedName(), err)
-	}
-
-	handler.OnReceiveTrailers(stat, streamReq.Trailer())
-	return nil
+	return result, nil
 }
 
 // func (in *InvokeHandler) invokeClientStream(ctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDescriptor, handler InvocationEventHandler,
