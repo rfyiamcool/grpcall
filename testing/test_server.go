@@ -25,7 +25,7 @@ type server struct{}
 
 // SayHello implements helloworld.GreeterServer
 func (s *server) SayHello(ctx context.Context, in *pb.HelloRequest) (*pb.HelloReply, error) {
-	log.Println("######### get client request name :" + in.Name)
+	log.Println("get client request name :" + in.Name)
 	return &pb.HelloReply{Message: "hehe main: Hello-" + in.Name}, nil
 }
 
@@ -55,7 +55,7 @@ func (s *simpleServer) SimpleRPC(stream pb.SimpleService_SimpleRPCServer) error 
 		var err error
 		for {
 			d := pb.SimpleData{Msg: "haha"}
-			stream.Send(&d)
+			err = stream.Send(&d)
 			if err == io.EOF {
 				log.Println(err)
 				return nil
@@ -66,7 +66,8 @@ func (s *simpleServer) SimpleRPC(stream pb.SimpleService_SimpleRPCServer) error 
 				return err
 			}
 
-			time.Sleep(1 * time.Second)
+			log.Println("send body ok")
+			time.Sleep(2 * time.Second)
 		}
 	}()
 
@@ -82,15 +83,17 @@ func main() {
 	lis, err := net.Listen("tcp", port)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
+		return
 	}
-	s := grpc.NewServer()
 
+	s := grpc.NewServer()
 	srv := &server{}
 	srvm := &simpleServer{}
+
 	pb.RegisterGreeterServer(s, srv)
 	pb.RegisterSimpleServiceServer(s, srvm)
-	// Register reflection service on gRPC server.
 	reflection.Register(s)
+
 	if err := s.Serve(lis); err != nil {
 		log.Fatalf("failed to serve: %v", err)
 	}

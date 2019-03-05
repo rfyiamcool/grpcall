@@ -204,11 +204,6 @@ func (in *InvokeHandler) invokeAllStrem(pctx context.Context, stub grpcdynamic.S
 		}
 	)
 
-	// sendErr atomic.Value
-	// if se, ok := sendErr.Load().(error); ok && se != io.EOF {
-	// 	err = se
-	// }
-
 	// first send
 	err = requestData(req)
 	if err != nil {
@@ -276,9 +271,14 @@ func (in *InvokeHandler) invokeAllStrem(pctx context.Context, stub grpcdynamic.S
 
 		for {
 			resp, err = streamReq.RecvMsg()
+			if err == io.EOF {
+				doneNotify(nil)
+				return
+			}
+
 			if err != nil {
 				doneNotify(err)
-				break
+				return
 			}
 
 			respHeaders, err := streamReq.Header()

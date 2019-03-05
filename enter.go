@@ -335,7 +335,7 @@ func (e *EngineHandler) CallWithClient(client *grpc.ClientConn, serviceName, met
 }
 
 func (e *EngineHandler) CallWithClientCtx(ctx context.Context, client *grpc.ClientConn, serviceName, methodName, data string) (*ResultModel, error) {
-	if client != nil {
+	if client == nil {
 		return nil, errors.New("invalid grpc client")
 	}
 
@@ -344,8 +344,12 @@ func (e *EngineHandler) CallWithClientCtx(ctx context.Context, client *grpc.Clie
 
 // invokeCall request target grpc server
 func (e *EngineHandler) invokeCall(ctx context.Context, gclient *grpc.ClientConn, target, serviceName, methodName, data string) (*ResultModel, error) {
-	if target == "" || serviceName == "" || methodName == "" {
-		return nil, errors.New("target or serverName or methodName is null")
+	if serviceName == "" || methodName == "" {
+		return nil, errors.New("serverName or methodName is null")
+	}
+
+	if gclient == nil && target == "" {
+		return nil, errors.New("target addr is null")
 	}
 
 	if ctx == nil {
