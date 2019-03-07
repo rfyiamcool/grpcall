@@ -63,9 +63,9 @@ func (s *serverStream) StreamRpc(req *pb.ServerStreamData, stream pb.ServerStrea
 	return nil
 }
 
-type simpleServer struct{}
+type bidiStreamServer struct{}
 
-func (s *simpleServer) SimpleRPC(stream pb.SimpleService_SimpleRPCServer) error {
+func (s *bidiStreamServer) BidiRPC(stream pb.BidiStreamService_BidiRPCServer) error {
 	log.Println("Started stream first")
 
 	wg := sync.WaitGroup{}
@@ -124,12 +124,12 @@ func main() {
 
 	s := grpc.NewServer()
 	srv := &server{}
-	srvm := &simpleServer{}
+	bidiStream := &bidiStreamServer{}
 	servStream := &serverStream{}
 
 	// register
 	pb.RegisterGreeterServer(s, srv)
-	pb.RegisterSimpleServiceServer(s, srvm)
+	pb.RegisterBidiStreamServiceServer(s, bidiStream)
 	pb.RegisterServerStreamServiceServer(s, servStream)
 	reflection.Register(s)
 

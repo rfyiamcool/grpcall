@@ -58,7 +58,7 @@ func main() {
 	wg.Wait()
 
 	sendBody = `{"msg": "hehe world"}`
-	res, err = grpcEnter.Call("127.0.0.1:50051", "helloworld.SimpleService", "SimpleRPC", sendBody)
+	res, err = grpcEnter.Call("127.0.0.1:50051", "helloworld.BidiStreamService", "BidiRPC", sendBody)
 	fmt.Printf("%+v \n", res)
 	fmt.Println("bidi client-server stream return err: ", err)
 
