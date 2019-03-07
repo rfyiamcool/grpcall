@@ -26,3 +26,11 @@ service SimpleService {
 message SimpleData {
     string msg = 1;
 }
+
+service ServerStreamService {
+    rpc StreamRpc(ServerStreamData) returns (stream ServerStreamData) {}
+}
+
+message ServerStreamData{
+    string msg = 1;
+}

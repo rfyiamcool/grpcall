@@ -46,6 +46,7 @@ type ResultModel struct {
 	Data       string
 	RespHeader metadata.MD
 	IsStream   bool
+	Cancel     context.CancelFunc
 }
 
 // RequestSupplier is a function that is called to populate messages for a gRPC operation.
@@ -75,7 +76,7 @@ func (in *InvokeHandler) InvokeRPC(ctx context.Context, source DescriptorSource,
 	dsc, err := source.FindSymbol(svc)
 	if err != nil {
 		if isNotFoundError(err) {
-			return nil, fmt.Errorf("target server not expose service %q", svc)
+			return nil, fmt.Errorf("target server not expose service %q in FindSymbol", svc)
 		}
 
 		return nil, fmt.Errorf("failed to query for service descriptor %q: %v", svc, err)
@@ -126,6 +127,25 @@ func (in *InvokeHandler) InvokeRPC(ctx context.Context, source DescriptorSource,
 
 		return in.invokeAllStrem(ctx, stub, mtd, in.eventHandler, requestData, req, data2PBParser)
 
+	} else if mtd.IsServerStreaming() {
+		data2PBParser := func(data string) (proto.Message, error) {
+			var (
+				inData io.Reader
+			)
+
+			inData = strings.NewReader(data)
+			rf, err := RequestParserFor(source, inData)
+			if err != nil {
+				return nil, errors.New("request parse and format failed")
+			}
+
+			req := msgFactory.NewMessage(mtd.GetInputType())
+			rf.Next(req)
+			return req, err
+		}
+
+		return in.invokeServerStream(ctx, stub, mtd, in.eventHandler, requestData, req, data2PBParser)
+
 	} else {
 		return in.invokeUnary(ctx, stub, mtd, in.eventHandler, requestData, req)
 	}
@@ -133,9 +153,6 @@ func (in *InvokeHandler) InvokeRPC(ctx context.Context, source DescriptorSource,
 
 // } else if mtd.IsClientStreaming() {
 // 	return invokeClientStream(ctx, stub, mtd, in.eventHandler, requestData, req)
-
-// } else if mtd.IsServerStreaming() {
-// 	return invokeServerStream(ctx, stub, mtd, in.eventHandler, requestData, req)
 
 func (in *InvokeHandler) invokeUnary(ctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDescriptor, handler InvocationEventHandler,
 	requestData RequestSupplier, req proto.Message) (*ResultModel, error) {
@@ -178,6 +195,7 @@ func (in *InvokeHandler) invokeUnary(ctx context.Context, stub grpcdynamic.Stub,
 	return result, nil
 }
 
+// invokeAllStrem server and client are stream mode
 func (in *InvokeHandler) invokeAllStrem(pctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDescriptor, handler InvocationEventHandler,
 	requestData RequestSupplier, req proto.Message, dataParser func(data string) (proto.Message, error)) (*ResultModel, error) {
 
@@ -302,6 +320,83 @@ func (in *InvokeHandler) invokeAllStrem(pctx context.Context, stub grpcdynamic.S
 		ResultChan: resultChan,
 		SendChan:   sendChan,
 		DoneChan:   doneChan,
+		Cancel:     cancel,
+	}
+
+	return result, nil
+}
+
+// invokeServerStream only server is stream mode
+func (in *InvokeHandler) invokeServerStream(pctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDescriptor, handler InvocationEventHandler,
+	requestData RequestSupplier, req proto.Message,
+	dataParser func(data string) (proto.Message, error)) (*ResultModel, error) {
+
+	// for inside logic
+	ctx, cancel := context.WithCancel(pctx)
+
+	// invoke rpc with stream mode
+	streamReq, err := stub.InvokeRpcServerStream(ctx, md, req)
+	if err != nil {
+		return nil, err
+	}
+
+	var (
+		resultChan = make(chan string, 10)
+		sendChan   = make(chan []byte, 10)
+		doneChan   = make(chan error, 1)
+
+		doneNotify = func(err error) {
+			select {
+			case doneChan <- err:
+			default:
+				return
+			}
+		}
+	)
+
+	// readLoop
+	go func() {
+		defer func() {
+			cancel()
+		}()
+
+		var err error
+		var resp proto.Message
+
+		for {
+			resp, err = streamReq.RecvMsg()
+			if err == io.EOF {
+				doneNotify(nil)
+				return
+			}
+
+			if err != nil {
+				doneNotify(err)
+				return
+			}
+
+			respHeaders, err := streamReq.Header()
+			if err != nil {
+				doneNotify(err)
+				return
+			}
+
+			// callback
+			respStr := DefaultEventHandler.FormatResponse(resp)
+			handler.OnReceiveData(respHeaders, respStr, err)
+			resultChan <- respStr
+
+			// zero buffer
+			resp.Reset()
+		}
+	}()
+
+	result := &ResultModel{
+		IsStream:   true,
+		ResultChan: resultChan,
+		SendChan:   sendChan,
+		DoneChan:   doneChan,
+		Cancel:     cancel,
 	}
 
 	return result, nil
@@ -357,8 +452,27 @@ func (in *InvokeHandler) invokeAllStrem(pctx context.Context, stub grpcdynamic.S
 // 	return nil
 // }
 
-// func (in *InvokeHandler) invokeServerStream(ctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDescriptor, handler InvocationEventHandler,
-// 	requestData RequestSupplier, req proto.Message) error {
+type notFoundError string
+
+func notFound(kind, name string) error {
+	return notFoundError(fmt.Sprintf("%s not found: %s", kind, name))
+}
+
+func (e notFoundError) Error() string {
+	return string(e)
+}
+
+func isNotFoundError(err error) bool {
+	if grpcreflect.IsElementNotFoundError(err) {
+		return true
+	}
+
+	_, ok := err.(notFoundError)
+	return ok
+}
+
+// func (in *InvokeHandler) invokeServerStream(pctx context.Context, stub grpcdynamic.Stub, md *desc.MethodDescriptor, handler InvocationEventHandler,
+// 	requestData RequestSupplier, req proto.Message, dataParser func(data string) (proto.Message, error)) (*ResultModel, error) {
 
 // 	err := requestData(req)
 // 	if err != nil && err != io.EOF {
@@ -401,26 +515,5 @@ func (in *InvokeHandler) invokeAllStrem(pctx context.Context, stub grpcdynamic.S
 // 		return fmt.Errorf("grpc call for %q failed: %v", md.GetFullyQualifiedName(), err)
 // 	}
 
-// 	handler.OnReceiveTrailers(stat, str.Trailer())
-
 // 	return nil
 // }
-
-type notFoundError string
-
-func notFound(kind, name string) error {
-	return notFoundError(fmt.Sprintf("%s not found: %s", kind, name))
-}
-
-func (e notFoundError) Error() string {
-	return string(e)
-}
-
-func isNotFoundError(err error) bool {
-	if grpcreflect.IsElementNotFoundError(err) {
-		return true
-	}
-
-	_, ok := err.(notFoundError)
-	return ok
-}

@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rfyiamcool/grpcall"
+	"git.biss.com/golib/grpcall"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -28,17 +28,41 @@ func main() {
 	)
 	grpcEnter.Init()
 
-	sendBody = `{"name": "xiaorui.cc"}`
+	sendBody = `{"name": "golang world"}`
 	res, err := grpcEnter.Call("127.0.0.1:50051", "helloworld.Greeter", "SayHello", sendBody)
 	fmt.Printf("%+v \n", res)
 	fmt.Println("req/reply return err: ", err)
 
 	sendBody = `{"msg": "hehe world"}`
-	res, err = grpcEnter.Call("127.0.0.1:50051", "helloworld.SimpleService", "SimpleRPC", sendBody)
+	res, err = grpcEnter.Call("127.0.0.1:50051", "helloworld.ServerStreamService", "StreamRpc", sendBody)
 	fmt.Printf("%+v \n", res)
-	fmt.Println("stream return err: ", err)
+	fmt.Println("server stream return err: ", err)
 
 	wg := sync.WaitGroup{}
+	wg.Add(1)
+
+	go func() {
+		defer wg.Done()
+
+		for {
+			select {
+			case msg, ok := <-res.ResultChan:
+				fmt.Println("recv data:", msg, ok)
+			case err := <-res.DoneChan:
+				fmt.Println("done chan: ", err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	sendBody = `{"msg": "hehe world"}`
+	res, err = grpcEnter.Call("127.0.0.1:50051", "helloworld.SimpleService", "SimpleRPC", sendBody)
+	fmt.Printf("%+v \n", res)
+	fmt.Println("bidi client-server stream return err: ", err)
+
+	wg = sync.WaitGroup{}
 	wg.Add(2)
 
 	go func() {

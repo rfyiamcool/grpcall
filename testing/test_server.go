@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
@@ -20,6 +21,20 @@ const (
 	port = ":50051"
 )
 
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
+var letterRunes = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+func randStrings(n int) string {
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letterRunes[rand.Intn(len(letterRunes))]
+	}
+	return string(b)
+}
+
 // server is used to implement helloworld.GreeterServer.
 type server struct{}
 
@@ -27,6 +42,25 @@ type server struct{}
 func (s *server) SayHello(ctx context.Context, in *pb.HelloRequest) (*pb.HelloReply, error) {
 	log.Println("get client request name :" + in.Name)
 	return &pb.HelloReply{Message: "hehe main: Hello-" + in.Name}, nil
+}
+
+type serverStream struct{}
+
+func (s *serverStream) StreamRpc(req *pb.ServerStreamData, stream pb.ServerStreamService_StreamRpcServer) error {
+	for {
+		d := pb.ServerStreamData{
+			Msg: randStrings(10),
+		}
+
+		err := stream.Send(&d)
+		if err != nil {
+			return err
+		}
+
+		time.Sleep(10 * time.Second)
+	}
+
+	return nil
 }
 
 type simpleServer struct{}
@@ -81,6 +115,7 @@ func main() {
 		http.ListenAndServe("0.0.0.0:8081", nil)
 	}()
 
+	log.Println("start")
 	lis, err := net.Listen("tcp", port)
 	if err != nil {
 		log.Fatalf("failed to listen: %v", err)
@@ -90,9 +125,12 @@ func main() {
 	s := grpc.NewServer()
 	srv := &server{}
 	srvm := &simpleServer{}
+	servStream := &serverStream{}
 
+	// register
 	pb.RegisterGreeterServer(s, srv)
 	pb.RegisterSimpleServiceServer(s, srvm)
+	pb.RegisterServerStreamServiceServer(s, servStream)
 	reflection.Register(s)
 
 	if err := s.Serve(lis); err != nil {
