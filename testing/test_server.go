@@ -72,6 +72,7 @@ func (s *simpleServer) SimpleRPC(stream pb.SimpleService_SimpleRPCServer) error 
 	}()
 
 	wg.Wait()
+	log.Println("client exited")
 	return nil
 }
 

@@ -75,7 +75,7 @@ func (in *InvokeHandler) InvokeRPC(ctx context.Context, source DescriptorSource,
 	dsc, err := source.FindSymbol(svc)
 	if err != nil {
 		if isNotFoundError(err) {
-			return nil, fmt.Errorf("target server does not expose service %q", svc)
+			return nil, fmt.Errorf("target server not expose service %q", svc)
 		}
 
 		return nil, fmt.Errorf("failed to query for service descriptor %q: %v", svc, err)
@@ -83,7 +83,7 @@ func (in *InvokeHandler) InvokeRPC(ctx context.Context, source DescriptorSource,
 
 	sd, ok := dsc.(*desc.ServiceDescriptor)
 	if !ok {
-		return nil, fmt.Errorf("target server does not expose service %q", svc)
+		return nil, fmt.Errorf("target server not expose service %q", svc)
 	}
 
 	mtd := sd.FindMethodByName(mth)
