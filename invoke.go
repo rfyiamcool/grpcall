@@ -49,6 +49,21 @@ type ResultModel struct {
 	Cancel     context.CancelFunc
 }
 
+func (r *ResultModel) Read() {
+}
+
+func (r *ResultModel) Write() {
+}
+
+func (r *ResultModel) IsError() {
+}
+
+func (r *ResultModel) IsClose() {
+}
+
+func (r *ResultModel) Close() {
+}
+
 // RequestSupplier is a function that is called to populate messages for a gRPC operation.
 type RequestSupplier func(proto.Message) error
 
@@ -333,6 +348,13 @@ func (in *InvokeHandler) invokeServerStream(pctx context.Context, stub grpcdynam
 
 	// for inside logic
 	ctx, cancel := context.WithCancel(pctx)
+
+	// init req
+	var err error
+	err = requestData(req)
+	if err != nil {
+		return nil, err
+	}
 
 	// invoke rpc with stream mode
 	streamReq, err := stub.InvokeRpcServerStream(ctx, md, req)
