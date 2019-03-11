@@ -388,7 +388,7 @@ func (in *InvokeHandler) invokeServerStream(pctx context.Context, stub grpcdynam
 		for {
 			resp, err = streamReq.RecvMsg()
 			if err == io.EOF {
-				doneNotify(nil)
+				doneNotify(err)
 				return
 			}
 
