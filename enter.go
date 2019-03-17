@@ -3,6 +3,7 @@ package grpcall
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/signal"
@@ -11,6 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/golang/protobuf/proto"
+	"github.com/jhump/protoreflect/desc"
+	"github.com/jhump/protoreflect/dynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -405,6 +409,100 @@ func (e *EngineHandler) invokeCall(ctx context.Context, gclient *grpc.ClientConn
 		rf.Next,
 	)
 	return result, err
+}
+
+func (e *EngineHandler) ListServices() ([]string, error) {
+	return descSourceController.descSource.ListServices()
+}
+
+func (e *EngineHandler) ListMethods(svc string) ([]string, error) {
+	return ListMethods(descSourceController.descSource, svc)
+}
+
+type ServMethodModel struct {
+	PackageName     string
+	ServiceName     string
+	FullServiceName string
+	MethodName      string
+	FullMethodName  string
+}
+
+func (e *EngineHandler) ListServiceAndMethods() (map[string][]ServMethodModel, error) {
+	servList, err := e.ListServices()
+	if err != nil {
+		return nil, err
+	}
+
+	m := map[string][]ServMethodModel{}
+	for _, svc := range servList {
+		fullMethodList, err := e.ListMethods(svc)
+		servMethodModelList := []ServMethodModel{}
+		for _, method := range fullMethodList {
+			cs := strings.Split(method, ".")
+			if len(cs) < 3 {
+				return nil, errors.New("method split failed")
+			}
+
+			dto := ServMethodModel{
+				MethodName:      cs[len(cs)-1],
+				ServiceName:     cs[len(cs)-2],
+				PackageName:     strings.Join(cs[:len(cs)-2], "."),
+				FullMethodName:  method,
+				FullServiceName: svc,
+			}
+			servMethodModelList = append(servMethodModelList, dto)
+		}
+
+		if err != nil {
+			return nil, err
+		}
+
+		m[svc] = servMethodModelList
+	}
+
+	return m, nil
+}
+
+func (e *EngineHandler) ExtractProtoType(svc, mth string) (proto.Message, proto.Message, error) {
+	var (
+		descSource DescriptorSource
+	)
+
+	descSource = descSourceController.descSource
+	dsc, err := descSource.FindSymbol(svc)
+	if err != nil {
+		if isNotFoundError(err) {
+			return nil, nil, errors.New("not find service in pb descriptor")
+		}
+
+		return nil, nil, errors.New("query service failed in pb descriptor")
+	}
+
+	sd, ok := dsc.(*desc.ServiceDescriptor)
+	if !ok {
+		return nil, nil, errors.New("not expose service")
+	}
+
+	mtd := sd.FindMethodByName(mth)
+	if mtd == nil {
+		return nil, nil, fmt.Errorf("service %q does not include a method named %q", svc, mth)
+	}
+
+	var ext dynamic.ExtensionRegistry
+	alreadyFetched := map[string]bool{}
+	if err = fetchAllExtensions(descSource, &ext, mtd.GetInputType(), alreadyFetched); err != nil {
+		return nil, nil, fmt.Errorf("error resolving server extensions for message %s: %v", mtd.GetInputType().GetFullyQualifiedName(), err)
+	}
+
+	if err = fetchAllExtensions(descSource, &ext, mtd.GetOutputType(), alreadyFetched); err != nil {
+		return nil, nil, fmt.Errorf("error resolving server extensions for message %s: %v", mtd.GetOutputType().GetFullyQualifiedName(), err)
+	}
+
+	msgFactory := dynamic.NewMessageFactoryWithExtensionRegistry(&ext)
+	req := msgFactory.NewMessage(mtd.GetInputType())
+	reply := msgFactory.NewMessage(mtd.GetOutputType())
+
+	return req, reply, nil
 }
 
 type multiString []string
