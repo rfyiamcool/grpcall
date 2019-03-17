@@ -44,11 +44,13 @@ func DescriptorSourceFromProtoSets(fileNames ...string) (DescriptorSource, error
 		if err != nil {
 			return nil, fmt.Errorf("could not load protoset file %q: %v", fileName, err)
 		}
+
 		var fs descpb.FileDescriptorSet
 		err = proto.Unmarshal(b, &fs)
 		if err != nil {
 			return nil, fmt.Errorf("could not parse contents of protoset file %q: %v", fileName, err)
 		}
+
 		files.File = append(files.File, fs.File...)
 	}
 	return DescriptorSourceFromFileDescriptorSet(files)
@@ -66,6 +68,7 @@ func DescriptorSourceFromProtoFiles(importPaths []string, fileNames ...string) (
 	if err != nil {
 		return nil, fmt.Errorf("could not parse given files: %v", err)
 	}
+
 	return DescriptorSourceFromFileDescriptors(fds...)
 }
 
@@ -75,6 +78,7 @@ func DescriptorSourceFromFileDescriptorSet(files *descpb.FileDescriptorSet) (Des
 	for _, fd := range files.File {
 		unresolved[fd.GetName()] = fd
 	}
+
 	resolved := map[string]*desc.FileDescriptor{}
 	for _, fd := range files.File {
 		_, err := resolveFileDescriptor(unresolved, resolved, fd.GetName())
@@ -82,6 +86,7 @@ func DescriptorSourceFromFileDescriptorSet(files *descpb.FileDescriptorSet) (Des
 			return nil, err
 		}
 	}
+
 	return &fileSource{files: resolved}, nil
 }
 
@@ -89,10 +94,12 @@ func resolveFileDescriptor(unresolved map[string]*descpb.FileDescriptorProto, re
 	if r, ok := resolved[filename]; ok {
 		return r, nil
 	}
+
 	fd, ok := unresolved[filename]
 	if !ok {
 		return nil, fmt.Errorf("no descriptor found for %q", filename)
 	}
+
 	deps := make([]*desc.FileDescriptor, 0, len(fd.GetDependency()))
 	for _, dep := range fd.GetDependency() {
 		depFd, err := resolveFileDescriptor(unresolved, resolved, dep)
@@ -101,10 +108,12 @@ func resolveFileDescriptor(unresolved map[string]*descpb.FileDescriptorProto, re
 		}
 		deps = append(deps, depFd)
 	}
+
 	result, err := desc.CreateFileDescriptor(fd, deps...)
 	if err != nil {
 		return nil, err
 	}
+
 	resolved[filename] = result
 	return result, nil
 }
@@ -118,6 +127,7 @@ func DescriptorSourceFromFileDescriptors(files ...*desc.FileDescriptor) (Descrip
 			return nil, err
 		}
 	}
+
 	return &fileSource{files: fds}, nil
 }
 
@@ -131,12 +141,14 @@ func addFile(fd *desc.FileDescriptor, fds map[string]*desc.FileDescriptor) error
 		}
 		return nil
 	}
+
 	fds[name] = fd
 	for _, dep := range fd.GetDependencies() {
 		if err := addFile(dep, fds); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -157,7 +169,28 @@ func (fs *fileSource) ListServices() ([]string, error) {
 	for svc := range set {
 		sl = append(sl, svc)
 	}
+
 	return sl, nil
+}
+
+func (fs *fileSource) ListMethods() (map[string][]string, error) {
+	set := map[string][]string{}
+	for _, fd := range fs.files {
+		for _, svc := range fd.GetServices() {
+			m, ok := set[svc.GetFullyQualifiedName()]
+			if !ok {
+				m = []string{}
+			}
+			for _, v := range svc.GetMethods() {
+				m = append(m, v.GetName())
+				// m = append(.GetFullyQualifiedName()], v.GetName())
+			}
+
+			set[svc.GetFullyQualifiedName()] = m
+		}
+	}
+
+	return set, nil
 }
 
 // GetAllFiles returns all of the underlying file descriptors. This is
@@ -171,6 +204,7 @@ func (fs *fileSource) GetAllFiles() ([]*desc.FileDescriptor, error) {
 		files[i] = fd
 		i++
 	}
+
 	return files, nil
 }
 
@@ -180,6 +214,7 @@ func (fs *fileSource) FindSymbol(fullyQualifiedName string) (desc.Descriptor, er
 			return dsc, nil
 		}
 	}
+
 	return nil, notFound("Symbol", fullyQualifiedName)
 }
 
@@ -214,10 +249,12 @@ func (ss serverSource) FindSymbol(fullyQualifiedName string) (desc.Descriptor, e
 	if err != nil {
 		return nil, reflectionSupport(err)
 	}
+
 	d := file.FindSymbol(fullyQualifiedName)
 	if d == nil {
 		return nil, notFound("Symbol", fullyQualifiedName)
 	}
+
 	return d, nil
 }
 
@@ -227,6 +264,7 @@ func (ss serverSource) AllExtensionsForType(typeName string) ([]*desc.FieldDescr
 	if err != nil {
 		return nil, reflectionSupport(err)
 	}
+
 	for _, fieldNum := range nums {
 		ext, err := ss.client.ResolveExtension(typeName, fieldNum)
 		if err != nil {
@@ -234,6 +272,7 @@ func (ss serverSource) AllExtensionsForType(typeName string) ([]*desc.FieldDescr
 		}
 		exts = append(exts, ext)
 	}
+
 	return exts, nil
 }
 
@@ -241,8 +280,10 @@ func reflectionSupport(err error) error {
 	if err == nil {
 		return nil
 	}
+
 	if stat, ok := status.FromError(err); ok && stat.Code() == codes.Unimplemented {
 		return ErrReflectionNotSupported
 	}
+
 	return err
 }

@@ -34,6 +34,7 @@ func ListServices(source DescriptorSource) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	sort.Strings(svcs)
 	return svcs, nil
 }
