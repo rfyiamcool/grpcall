@@ -6,7 +6,7 @@ package helloworld;
 service Greeter {
     // Sends a greeting
     rpc SayHello (HelloRequest) returns (HelloReply) {}
-
+    rpc SayGirl (HelloRequest) returns (HelloReply) {}
 }
 
 // The request message containing the user's name.
@@ -17,6 +17,26 @@ message HelloRequest {
 // The response message containing the greetings
 message HelloReply {
     string message = 1;
+}
+
+service Notify {
+    // Sends notify
+    rpc SayWorld (NotifyReq) returns (NotifyReply) {}
+    rpc SayHaha (NotifyReq) returns (NotifyReply) {}
+    rpc SayHi (NotifyReq) returns (NotifyReply) {}
+}
+
+// The request message containing the user's name.
+message NotifyReq{
+    string nick = 1;
+    string addr = 2;
+}
+
+// The response message containing the greetings
+message NotifyReply {
+    string message = 1;
+    string phone = 2;
+    string car = 3;
 }
 
 service BidiStreamService {
