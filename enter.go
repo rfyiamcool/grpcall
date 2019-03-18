@@ -58,8 +58,14 @@ func NewDescSourceEntry() *DescSourceEntry {
 	return desc
 }
 
-func SetProtoSetFiles(fileName string) {
+func SetProtoSetFiles(fileName string) (string, error) {
+	data, err := fileReadByte(fileName)
+	if err != nil {
+		return "", err
+	}
+
 	descSourceController.SetProtoSetFiles(fileName)
+	return makeHexMD5(data), nil
 }
 
 func SetProtoFiles(importPath string, protoFile string) {
@@ -190,6 +196,7 @@ type EngineHandler struct {
 
 	dialTime      time.Duration
 	keepAliveTime time.Duration
+	typeCacher    *protoTypesCache
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -243,6 +250,7 @@ func New(options ...Option) (*EngineHandler, error) {
 	e.eventHandler = defaultInEventHooker
 	e.descCtl = descSourceController
 	e.clients = make(map[string]*grpc.ClientConn, 10)
+	e.typeCacher = newProtoTypeCache()
 
 	for _, opt := range options {
 		if opt != nil {
@@ -468,6 +476,13 @@ func (e *EngineHandler) ExtractProtoType(svc, mth string) (proto.Message, proto.
 		descSource DescriptorSource
 	)
 
+	// get types from cache
+	key := e.typeCacher.makeKey(svc, mth)
+	model, ok := e.typeCacher.get(key)
+	if ok {
+		return model.reqType, model.respType, nil
+	}
+
 	descSource = descSourceController.descSource
 	dsc, err := descSource.FindSymbol(svc)
 	if err != nil {
@@ -502,6 +517,8 @@ func (e *EngineHandler) ExtractProtoType(svc, mth string) (proto.Message, proto.
 	req := msgFactory.NewMessage(mtd.GetInputType())
 	reply := msgFactory.NewMessage(mtd.GetOutputType())
 
+	// set types to cache
+	e.typeCacher.set(key, req, reply)
 	return req, reply, nil
 }
 

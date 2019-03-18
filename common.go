@@ -1,9 +1,27 @@
 package grpcall
 
 import (
+	"crypto/md5"
+	"encoding/hex"
+	"io/ioutil"
 	"os"
 	"strings"
 )
+
+func makeHexMD5(bs []byte) string {
+	h := md5.New()
+	h.Write(bs)
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+func fileReadByte(file string) ([]byte, error) {
+	b, err := ioutil.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+
+	return b, nil
+}
 
 func pathExists(path string) bool {
 	_, err := os.Stat(path) //os.Stat获取文件信息
