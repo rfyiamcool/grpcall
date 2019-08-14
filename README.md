@@ -1,6 +1,6 @@
 # grpcall
 
-grpcall is a client library easy request GRPC Server with reflect mode. and easy make grpc proxy mode middleware, like grpc-gateway. 
+grpcall is a client library easy request GRPC Server with reflect mode, then it make grpc proxy mode middleware, like grpc-gateway.
 
 use GRPC's reflect mode to request GRPC Server. grpcall support FileDescriptorSet and grpc/reflection mode.
 
