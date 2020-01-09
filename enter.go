@@ -155,8 +155,6 @@ func (d *DescSourceEntry) InitDescSource() error {
 			return errors.New("Failed to process proto source files")
 		}
 
-		descSourceController.descSource = desc
-
 	default:
 		return errors.New("only eq ProtoSetMode and ProtoFilesMode")
 	}
