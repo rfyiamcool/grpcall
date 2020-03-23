@@ -14,7 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
-	pb "git.biss.com/golib/grpcall/testing/helloworld"
+	pb "grpcall/testing/helloworld"
 )
 
 const (
