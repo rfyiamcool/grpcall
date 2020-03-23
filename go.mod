@@ -1,4 +1,4 @@
-module grpcall
+module github.com/karldoenitz/grpcall
 
 require (
 	github.com/fullstorydev/grpcurl v1.1.0
